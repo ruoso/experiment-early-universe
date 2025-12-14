@@ -1,20 +1,4 @@
-"""Phase 4 priors and typicality estimates for the quadratic slow-roll MVP.
-
-This module defines a small menu of priors over the pre-IC parameterization
-C=(phi_star, m) and provides Monte Carlo estimators for P(valid) under each
-choice. The priors mirror the menu in ``docs/PRIORS.md``:
-
-- P1: flat in phi_star, flat in log m
-- P2: flat in phi_star, flat in log V_star (with V_star = 1/2 m^2 phi_star^2)
-- P3: volume-weighted proxy using weight w = exp(3N(phi_star)) applied to P1
-
-Usage
------
-Run ``python -m src.priors`` to print a small summary table for the default
-configurations. The defaults mirror the Phase 3 scan ranges and the Phase 2
-validity predicate (tensor constraint off by default).
-"""
-
+"""Phase 4 priors and typicality estimates for registered models."""
 from __future__ import annotations
 
 import math
@@ -22,12 +6,14 @@ import random
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, Optional, Tuple
 
-from . import mvp_model
+from .ic_spec import ICTargetSpec, N_RANGE_BASELINE
+from .model_registry import ModelConfig, get_model
 
-# Default parameter ranges (match Phase 3 scan for consistency)
-PHI_RANGE_DEFAULT: Tuple[float, float] = (6.0, 22.0)
-M_RANGE_DEFAULT: Tuple[float, float] = (5e-7, 5e-5)
-N_RANGE_DEFAULT: Tuple[float, float] = (50.0, 60.0)
+# Default configuration mirrors the quadratic model setup
+DEFAULT_MODEL = get_model("quadratic")
+PHI_RANGE_DEFAULT: Tuple[float, float] = DEFAULT_MODEL.default_phi_range
+PARAM_RANGE_DEFAULT: Tuple[float, float] = DEFAULT_MODEL.default_param_range
+N_RANGE_DEFAULT: Tuple[float, float] = N_RANGE_BASELINE
 
 
 @dataclass
@@ -35,7 +21,7 @@ class Sample:
     """A single draw from a prior distribution."""
 
     phi_star: float
-    m: float
+    param: float
     weight: float = 1.0
 
 
@@ -50,7 +36,7 @@ class PriorResult:
     weight_sum_valid: float
     p_valid: float
     mean_phi_valid: Optional[float]
-    mean_m_valid: Optional[float]
+    mean_param_valid: Optional[float]
     mean_N_valid: Optional[float]
 
     def as_dict(self) -> Dict[str, float | int | str | None]:
@@ -62,7 +48,7 @@ class PriorResult:
             "weight_sum_valid": self.weight_sum_valid,
             "p_valid": self.p_valid,
             "mean_phi_valid": self.mean_phi_valid,
-            "mean_m_valid": self.mean_m_valid,
+            "mean_param_valid": self.mean_param_valid,
             "mean_N_valid": self.mean_N_valid,
         }
 
@@ -82,49 +68,68 @@ def _uniform_log(rng: random.Random, low: float, high: float) -> float:
 def _sample_p1(
     rng: random.Random,
     phi_range: Tuple[float, float],
-    m_range: Tuple[float, float],
+    param_range: Tuple[float, float],
 ) -> Sample:
     phi_star = _uniform(rng, *phi_range)
-    m = _uniform_log(rng, *m_range)
-    return Sample(phi_star=phi_star, m=m, weight=1.0)
+    param = _uniform_log(rng, *param_range)
+    return Sample(phi_star=phi_star, param=param, weight=1.0)
+
+
+def _potential_bounds(
+    model: ModelConfig,
+    phi_range: Tuple[float, float],
+    param_range: Tuple[float, float],
+    mpl: float,
+) -> Tuple[float, float]:
+    if model.potential is None:
+        raise ValueError(f"Model {model.name} does not expose a potential for P2")
+
+    potentials = [
+        model.potential(phi, param, mpl)
+        for phi in (phi_range[0], phi_range[1])
+        for param in (param_range[0], param_range[1])
+    ]
+    potentials = [p for p in potentials if p > 0]
+    if not potentials:
+        raise ValueError("Potential values must be positive to define log-flat bounds")
+    return min(potentials), max(potentials)
 
 
 def _sample_p2(
     rng: random.Random,
     phi_range: Tuple[float, float],
-    m_range: Tuple[float, float],
+    param_range: Tuple[float, float],
+    *,
+    model: ModelConfig,
+    mpl: float,
 ) -> Sample:
-    """Flat in phi_star, flat in log V_star with V_star = 1/2 m^2 phi_star^2.
+    """Flat in phi_star, flat in log V_star using model potential."""
 
-    The V range is chosen so that the derived ``m`` remains within ``m_range``
-    for any phi_star in ``phi_range``.
-    """
+    if model.param_from_energy is None:
+        raise ValueError(f"Model {model.name} cannot invert V->param for P2")
 
     phi_star = _uniform(rng, *phi_range)
-
-    phi_min, phi_max = phi_range
-    m_min, m_max = m_range
-    V_min = 0.5 * (m_min ** 2) * (phi_max ** 2)
-    V_max = 0.5 * (m_max ** 2) * (phi_min ** 2)
-
+    V_min, V_max = _potential_bounds(model, phi_range, param_range, mpl)
     V_star = _uniform_log(rng, V_min, V_max)
-    m = math.sqrt(2.0 * V_star) / phi_star
-    return Sample(phi_star=phi_star, m=m, weight=1.0)
+    param = model.param_from_energy(phi_star, V_star, mpl)
+    return Sample(phi_star=phi_star, param=param, weight=1.0)
 
 
 def _sample_p3(
     rng: random.Random,
     phi_range: Tuple[float, float],
-    m_range: Tuple[float, float],
+    param_range: Tuple[float, float],
     *,
+    model: ModelConfig,
     mpl: float,
 ) -> Sample:
     """Volume-weighted proxy using weight w = exp(3N(phi_star))."""
 
-    base_sample = _sample_p1(rng, phi_range, m_range)
-    N_val = mvp_model.e_folds(base_sample.phi_star, mpl)
-    weight = math.exp(3.0 * N_val)
-    return Sample(phi_star=base_sample.phi_star, m=base_sample.m, weight=weight)
+    base_sample = _sample_p1(rng, phi_range, param_range)
+    N_val = model.e_folds(base_sample.phi_star, base_sample.param, mpl)
+    # Avoid floating-point overflow for very large N by capping the exponent.
+    weight = math.exp(min(3.0 * N_val, 700.0))
+    return Sample(phi_star=base_sample.phi_star, param=base_sample.param, weight=weight)
 
 
 def _estimate_prior(
@@ -132,35 +137,28 @@ def _estimate_prior(
     name: str,
     sampler: Callable[[random.Random], Sample],
     n_samples: int,
+    model: ModelConfig,
     mpl: float,
     N_range: Tuple[float, float],
-    As0: float,
-    ns0: float,
-    dAs_frac: float,
-    dns_abs: float,
-    r_max: float | None,
+    target: ICTargetSpec,
 ) -> PriorResult:
     rng = random.Random()
     n_valid = 0
     weight_sum = 0.0
     weight_sum_valid = 0.0
     sum_phi = 0.0
-    sum_m = 0.0
+    sum_param = 0.0
     sum_N = 0.0
 
     for _ in range(n_samples):
         sample = sampler(rng)
-        forward_result = mvp_model.forward(sample.phi_star, sample.m, mpl)
-        is_valid = mvp_model.valid(
+        forward_result = model.forward(sample.phi_star, sample.param, mpl)
+        is_valid = model.valid(
             sample.phi_star,
-            sample.m,
+            sample.param,
             mpl=mpl,
             N_range=N_range,
-            As0=As0,
-            ns0=ns0,
-            dAs_frac=dAs_frac,
-            dns_abs=dns_abs,
-            r_max=r_max,
+            target=target,
         )
 
         weight_sum += sample.weight
@@ -168,13 +166,13 @@ def _estimate_prior(
             n_valid += 1
             weight_sum_valid += sample.weight
             sum_phi += sample.weight * sample.phi_star
-            sum_m += sample.weight * sample.m
+            sum_param += sample.weight * sample.param
             sum_N += sample.weight * forward_result.N
 
     p_valid = weight_sum_valid / weight_sum if weight_sum > 0 else 0.0
 
     mean_phi_valid = sum_phi / weight_sum_valid if weight_sum_valid > 0 else None
-    mean_m_valid = sum_m / weight_sum_valid if weight_sum_valid > 0 else None
+    mean_param_valid = sum_param / weight_sum_valid if weight_sum_valid > 0 else None
     mean_N_valid = sum_N / weight_sum_valid if weight_sum_valid > 0 else None
 
     return PriorResult(
@@ -185,59 +183,56 @@ def _estimate_prior(
         weight_sum_valid=weight_sum_valid,
         p_valid=p_valid,
         mean_phi_valid=mean_phi_valid,
-        mean_m_valid=mean_m_valid,
+        mean_param_valid=mean_param_valid,
         mean_N_valid=mean_N_valid,
     )
 
 
 def estimate_priors(
     *,
+    model: ModelConfig = DEFAULT_MODEL,
     n_samples: int = 20000,
-    phi_range: Tuple[float, float] = PHI_RANGE_DEFAULT,
-    m_range: Tuple[float, float] = M_RANGE_DEFAULT,
+    phi_range: Tuple[float, float] | None = None,
+    param_range: Tuple[float, float] | None = None,
     N_range: Tuple[float, float] = N_RANGE_DEFAULT,
     mpl: float = 1.0,
-    As0: float = mvp_model.AS0,
-    ns0: float = mvp_model.NS0,
-    dAs_frac: float = mvp_model.DAS_FRAC,
-    dns_abs: float = mvp_model.DNS_ABS,
-    r_max: float | None = None,
+    target: ICTargetSpec = ICTargetSpec.mode_a(),
 ) -> Tuple[PriorResult, PriorResult, PriorResult]:
     """Estimate P(valid) for the three default priors via Monte Carlo."""
 
+    phi_limits = phi_range or model.default_phi_range
+    param_limits = param_range or model.default_param_range
+
     def p1_sampler(rng: random.Random) -> Sample:
-        return _sample_p1(rng, phi_range, m_range)
+        return _sample_p1(rng, phi_limits, param_limits)
 
     def p2_sampler(rng: random.Random) -> Sample:
-        return _sample_p2(rng, phi_range, m_range)
+        return _sample_p2(rng, phi_limits, param_limits, model=model, mpl=mpl)
 
     def p3_sampler(rng: random.Random) -> Sample:
-        return _sample_p3(rng, phi_range, m_range, mpl=mpl)
+        return _sample_p3(rng, phi_limits, param_limits, model=model, mpl=mpl)
 
     common_kwargs = dict(
         n_samples=n_samples,
+        model=model,
         mpl=mpl,
         N_range=N_range,
-        As0=As0,
-        ns0=ns0,
-        dAs_frac=dAs_frac,
-        dns_abs=dns_abs,
-        r_max=r_max,
+        target=target,
     )
 
-    p1 = _estimate_prior(name="P1_flat_phi_log_m", sampler=p1_sampler, **common_kwargs)
+    p1 = _estimate_prior(name="P1_flat_phi_log_param", sampler=p1_sampler, **common_kwargs)
     p2 = _estimate_prior(name="P2_flat_phi_log_V", sampler=p2_sampler, **common_kwargs)
     p3 = _estimate_prior(name="P3_volume_weighted", sampler=p3_sampler, **common_kwargs)
     return p1, p2, p3
 
 
-def _format_result(result: PriorResult) -> str:
+def _format_result(result: PriorResult, param_label: str) -> str:
     if result.mean_phi_valid is None:
         posterior = "(no valid samples)"
     else:
         posterior = (
             f"phi*: {result.mean_phi_valid:.3f}, "
-            f"m: {result.mean_m_valid:.3e}, "
+            f"{param_label}: {result.mean_param_valid:.3e}, "
             f"N: {result.mean_N_valid:.2f}"
         )
 
@@ -250,40 +245,35 @@ def _format_result(result: PriorResult) -> str:
 
 def run_summary(  # pragma: no cover - convenience CLI
     *,
+    model: ModelConfig = DEFAULT_MODEL,
     n_samples: int = 20000,
-    phi_range: Tuple[float, float] = PHI_RANGE_DEFAULT,
-    m_range: Tuple[float, float] = M_RANGE_DEFAULT,
+    phi_range: Tuple[float, float] | None = None,
+    param_range: Tuple[float, float] | None = None,
     N_range: Tuple[float, float] = N_RANGE_DEFAULT,
     mpl: float = 1.0,
-    As0: float = mvp_model.AS0,
-    ns0: float = mvp_model.NS0,
-    dAs_frac: float = mvp_model.DAS_FRAC,
-    dns_abs: float = mvp_model.DNS_ABS,
-    r_max: float | None = None,
+    target: ICTargetSpec = ICTargetSpec.mode_a(),
 ) -> Iterable[str]:
     """Yield human-readable summary lines for the three priors."""
 
     results = estimate_priors(
+        model=model,
         n_samples=n_samples,
         phi_range=phi_range,
-        m_range=m_range,
+        param_range=param_range,
         N_range=N_range,
         mpl=mpl,
-        As0=As0,
-        ns0=ns0,
-        dAs_frac=dAs_frac,
-        dns_abs=dns_abs,
-        r_max=r_max,
+        target=target,
     )
     for result in results:
-        yield _format_result(result)
+        yield _format_result(result, model.param_name)
 
 
 def run_sensitivity(  # pragma: no cover - convenience CLI
     *,
+    model: ModelConfig = DEFAULT_MODEL,
     n_samples: int = 20000,
-    phi_range: Tuple[float, float] = PHI_RANGE_DEFAULT,
-    m_range: Tuple[float, float] = M_RANGE_DEFAULT,
+    phi_range: Tuple[float, float] | None = None,
+    param_range: Tuple[float, float] | None = None,
     mpl: float = 1.0,
 ) -> Iterable[str]:
     """Yield summary lines for a small set of sensitivity variants.
@@ -294,43 +284,37 @@ def run_sensitivity(  # pragma: no cover - convenience CLI
     - Narrower and wider tolerance bands
     """
 
+    base_target = ICTargetSpec.mode_a()
     configs = [
-        dict(name="baseline_r_off", N_range=N_RANGE_DEFAULT, r_max=None),
-        dict(name="tensor_on", N_range=N_RANGE_DEFAULT, r_max=mvp_model.R_MAX),
-        dict(name="wide_N", N_range=(45.0, 65.0), r_max=None),
+        dict(name="baseline_r_off", N_range=N_RANGE_DEFAULT, target=base_target),
+        dict(name="tensor_on", N_range=N_RANGE_DEFAULT, target=ICTargetSpec.mode_b()),
+        dict(name="wide_N", N_range=(45.0, 65.0), target=base_target),
         dict(
             name="tight_tolerances",
             N_range=N_RANGE_DEFAULT,
-            r_max=None,
-            dAs_frac=0.01,
-            dns_abs=0.002,
+            target=ICTargetSpec(As0=base_target.As0, ns0=base_target.ns0, dAs_frac=0.01, dns_abs=0.002, r_max=None),
         ),
         dict(
             name="loose_tolerances",
             N_range=N_RANGE_DEFAULT,
-            r_max=None,
-            dAs_frac=0.03,
-            dns_abs=0.006,
+            target=ICTargetSpec(As0=base_target.As0, ns0=base_target.ns0, dAs_frac=0.03, dns_abs=0.006, r_max=None),
         ),
     ]
 
     for cfg in configs:
         results = estimate_priors(
+            model=model,
             n_samples=n_samples,
             phi_range=phi_range,
-            m_range=m_range,
+            param_range=param_range,
             N_range=cfg.get("N_range", N_RANGE_DEFAULT),
             mpl=mpl,
-            As0=cfg.get("As0", mvp_model.AS0),
-            ns0=cfg.get("ns0", mvp_model.NS0),
-            dAs_frac=cfg.get("dAs_frac", mvp_model.DAS_FRAC),
-            dns_abs=cfg.get("dns_abs", mvp_model.DNS_ABS),
-            r_max=cfg.get("r_max", None),
+            target=cfg.get("target", base_target),
         )
         header = f"[{cfg['name']}]"
         yield header
         for result in results:
-            yield _format_result(result)
+            yield _format_result(result, model.param_name)
         yield ""
 
 
