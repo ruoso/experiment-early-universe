@@ -1,26 +1,16 @@
-"""Minimal slow-roll forward model for the quadratic potential.
-
-This module implements the Phase 1 forward map described in
-``docs/MODEL_SPEC.md`` for the MVP pipeline. The default convention sets
-Mpl=1 in the formulas, but an explicit ``mpl`` value can be provided to
-reintroduce physical units (defaulting to the reduced Planck mass).
-"""
+"""Quadratic slow-roll forward model (Model 1)."""
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Optional, Tuple
 
 # Reduced Planck mass in GeV (Planck 2018 best-fit).
 MPL_REDUCED_GEV = 2.435e18
 
-# Baseline IC target values and tolerances (see docs/IC_TARGET_SPEC.md).
-AS0 = 2.1e-9
-NS0 = 0.965
-DAS_FRAC = 0.02
-DNS_ABS = 0.004
-R_MAX = 0.06
+from .ic_spec import ICTargetSpec, N_RANGE_BASELINE
+from .model_types import ForwardResult
+from .model_utils import N_in_range
 
 
 def epsilon(phi: float, mpl: float = 1.0) -> float:
@@ -80,24 +70,6 @@ def r(phi_star: float, mpl: float = 1.0) -> float:
     return 16.0 * eps_val
 
 
-@dataclass
-class ForwardResult:
-    As: float
-    ns: float
-    r: float
-    N: float
-    phi_end: float
-
-    def as_dict(self) -> Dict[str, float]:
-        return {
-            "As": self.As,
-            "ns": self.ns,
-            "r": self.r,
-            "N": self.N,
-            "phi_end": self.phi_end,
-        }
-
-
 def forward(phi_star: float, m: float, mpl: float = 1.0) -> ForwardResult:
     """Compute the forward map F(C) -> {As, ns, r, N, phi_end}.
 
@@ -122,56 +94,13 @@ def forward(phi_star: float, m: float, mpl: float = 1.0) -> ForwardResult:
     return result
 
 
-def accept_target(
-    As_val: float,
-    ns_val: float,
-    r_val: Optional[float] = None,
-    *,
-    As0: float = AS0,
-    ns0: float = NS0,
-    dAs_frac: float = DAS_FRAC,
-    dns_abs: float = DNS_ABS,
-    r_max: Optional[float] = R_MAX,
-) -> bool:
-    """Predicate for the IC target region R(T)."""
-
-    As_min = As0 * (1.0 - dAs_frac)
-    As_max = As0 * (1.0 + dAs_frac)
-    ns_min = ns0 - dns_abs
-    ns_max = ns0 + dns_abs
-
-    if not (As_min <= As_val <= As_max):
-        return False
-    if not (ns_min <= ns_val <= ns_max):
-        return False
-
-    if r_max is None:
-        return True
-
-    if r_val is None:
-        return False
-
-    return r_val <= r_max
-
-
-def N_in_range(N: float, N_range: Iterable[float]) -> bool:
-    """Check whether N lies within [N_min, N_max]."""
-
-    N_min, N_max = N_range
-    return N_min <= N <= N_max
-
-
 def valid(
     phi_star: float,
     m: float,
     *,
     mpl: float = 1.0,
-    N_range: Tuple[float, float] = (50.0, 60.0),
-    As0: float = AS0,
-    ns0: float = NS0,
-    dAs_frac: float = DAS_FRAC,
-    dns_abs: float = DNS_ABS,
-    r_max: Optional[float] = R_MAX,
+    N_range: Tuple[float, float] = N_RANGE_BASELINE,
+    target: ICTargetSpec = ICTargetSpec.mode_a(),
 ) -> bool:
     """Validity predicate for a configuration C=(phi_star, m)."""
 
@@ -180,14 +109,5 @@ def valid(
     if not N_in_range(forward_result.N, N_range):
         return False
 
-    return accept_target(
-        forward_result.As,
-        forward_result.ns,
-        forward_result.r,
-        As0=As0,
-        ns0=ns0,
-        dAs_frac=dAs_frac,
-        dns_abs=dns_abs,
-        r_max=r_max,
-    )
+    return target.accept(forward_result.As, forward_result.ns, forward_result.r)
 

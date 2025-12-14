@@ -32,3 +32,7 @@ Move into **Phase 4 — Priors and typicality**: implement the prior menu in `pr
 - **Feasibility scan outcome:** Only 1 of 1,600 grid points in the Phase 3 sweep is valid (≈6.25×10⁻⁴ fraction), localized near φ*≈15 and m≈6×10⁻⁶; plots saved under `results/` visualize the narrow band.
 - **Baseline typicality:** For the scalar-only baseline, P(valid) ≈ 4.5×10⁻⁴ (P1) to 6.5×10⁻⁴ (P2); volume weighting (P3) collapses support to ~10⁻⁸¹.
 - **Sensitivity:** Enforcing the tensor bound removes all support; widening N to [45, 65] modestly increases P(valid) (<1×10⁻³ for P1/P2), while tighter tolerances suppress validity by ≳10× and looser tolerances yield only slight relief.
+
+## Phase 6 decision (Model 1 vs Model 2)
+- **Finding:** The plateau (Model 2) introduces a small valid band that survives the tensor ceiling (Mode B feasible), but scalar priors stay at O(10⁻⁴–10⁻³) and volume weighting still drives P(valid) ≈ 0 for both models.
+- **Decision:** Treat the suppression as measure-dominated and prioritize **measure sensitivity** next (e.g., alternative volume weights / reheating assumptions) over adding more low-r models, since the plateau does not restore typicality.

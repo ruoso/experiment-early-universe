@@ -1,7 +1,7 @@
-"""Phase 3 scanning helpers for the quadratic slow-roll MVP.
+"""Phase 3 scanning helpers for registered inflationary models.
 
-This module performs coarse grid scans over (phi_star, m) to assess
-feasibility under the Phase 2 validity predicate and produces simple
+This module performs coarse grid scans over (phi_star, model_param) to
+assess feasibility under the Phase 2 validity predicate and produces simple
 diagnostic plots for the feasibility region and the induced (As, ns)
 scatter.
 """
@@ -13,12 +13,11 @@ import os
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence, Tuple
 
-from . import mvp_model
+from .ic_spec import ICTargetSpec, N_RANGE_BASELINE
+from .model_registry import ModelConfig, get_model
 
 
-PHI_RANGE_DEFAULT: Tuple[float, float] = (6.0, 22.0)
-M_RANGE_DEFAULT: Tuple[float, float] = (5e-7, 5e-5)
-N_RANGE_DEFAULT: Tuple[float, float] = (50.0, 60.0)
+DEFAULT_MODEL = get_model("quadratic")
 
 
 def _logspace(start: float, stop: float, num: int) -> List[float]:
@@ -35,8 +34,10 @@ def _logspace(start: float, stop: float, num: int) -> List[float]:
 
 @dataclass
 class ScanPoint:
+    model_name: str
+    param_name: str
     phi_star: float
-    m: float
+    param: float
     As: float
     ns: float
     r: float
@@ -49,41 +50,27 @@ class ScanPoint:
     def from_params(
         cls,
         phi_star: float,
-        m: float,
+        param: float,
         *,
         mpl: float,
         N_range: Tuple[float, float],
-        As0: float,
-        ns0: float,
-        dAs_frac: float,
-        dns_abs: float,
-        r_max: float | None,
+        model: ModelConfig,
+        target: ICTargetSpec,
     ) -> "ScanPoint":
-        forward = mvp_model.forward(phi_star, m, mpl)
-        accept = mvp_model.accept_target(
-            forward.As,
-            forward.ns,
-            forward.r,
-            As0=As0,
-            ns0=ns0,
-            dAs_frac=dAs_frac,
-            dns_abs=dns_abs,
-            r_max=r_max,
-        )
-        valid = mvp_model.valid(
+        forward = model.forward(phi_star, param, mpl)
+        accept = target.accept(forward.As, forward.ns, forward.r)
+        valid = model.valid(
             phi_star,
-            m,
+            param,
             mpl=mpl,
             N_range=N_range,
-            As0=As0,
-            ns0=ns0,
-            dAs_frac=dAs_frac,
-            dns_abs=dns_abs,
-            r_max=r_max,
+            target=target,
         )
         return cls(
+            model_name=model.name,
+            param_name=model.param_name,
             phi_star=phi_star,
-            m=m,
+            param=param,
             As=forward.As,
             ns=forward.ns,
             r=forward.r,
@@ -96,44 +83,48 @@ class ScanPoint:
 
 def coarse_grid(
     *,
-    phi_range: Tuple[float, float] = PHI_RANGE_DEFAULT,
-    m_range: Tuple[float, float] = M_RANGE_DEFAULT,
-    N_range: Tuple[float, float] = N_RANGE_DEFAULT,
+    model: ModelConfig = DEFAULT_MODEL,
+    phi_range: Tuple[float, float] | None = None,
+    param_range: Tuple[float, float] | None = None,
+    N_range: Tuple[float, float] = N_RANGE_BASELINE,
     n_phi: int = 40,
-    n_m: int = 40,
+    n_param: int = 40,
     mpl: float = 1.0,
-    As0: float = mvp_model.AS0,
-    ns0: float = mvp_model.NS0,
-    dAs_frac: float = mvp_model.DAS_FRAC,
-    dns_abs: float = mvp_model.DNS_ABS,
-    r_max: float | None = None,
+    target: ICTargetSpec = ICTargetSpec.mode_a(),
 ) -> List[ScanPoint]:
-    """Evaluate a coarse grid over (phi_star, m).
+    """Evaluate a coarse grid over (phi_star, model_param).
 
-    The grid samples ``phi_star`` linearly and ``m`` logarithmically to capture
-    the wide dynamic range of the mass parameter while keeping runtime small.
+    The grid samples ``phi_star`` linearly and the second parameter either
+    linearly or logarithmically depending on ``model.param_scale``.
     """
 
+    phi_limits = phi_range or model.default_phi_range
+    param_limits = param_range or model.default_param_range
+
     phi_vals = [
-        phi_range[0] + i * (phi_range[1] - phi_range[0]) / (n_phi - 1)
+        phi_limits[0] + i * (phi_limits[1] - phi_limits[0]) / (n_phi - 1)
         for i in range(n_phi)
     ]
-    m_vals = _logspace(m_range[0], m_range[1], n_m)
+
+    if model.param_scale == "log":
+        param_vals = _logspace(param_limits[0], param_limits[1], n_param)
+    else:
+        param_vals = [
+            param_limits[0] + i * (param_limits[1] - param_limits[0]) / (n_param - 1)
+            for i in range(n_param)
+        ]
 
     results: List[ScanPoint] = []
     for phi_star in phi_vals:
-        for m_val in m_vals:
+        for param_val in param_vals:
             results.append(
                 ScanPoint.from_params(
                     phi_star,
-                    m_val,
+                    param_val,
                     mpl=mpl,
                     N_range=N_range,
-                    As0=As0,
-                    ns0=ns0,
-                    dAs_frac=dAs_frac,
-                    dns_abs=dns_abs,
-                    r_max=r_max,
+                    model=model,
+                    target=target,
                 )
             )
     return results
@@ -150,10 +141,8 @@ def _split_by_validity(points: Iterable[ScanPoint]) -> Tuple[List[ScanPoint], Li
 def plot_feasibility(
     points: Sequence[ScanPoint],
     *,
-    As0: float = mvp_model.AS0,
-    ns0: float = mvp_model.NS0,
-    dAs_frac: float = mvp_model.DAS_FRAC,
-    dns_abs: float = mvp_model.DNS_ABS,
+    target: ICTargetSpec,
+    param_scale: str,
     results_dir: str = "results",
 ) -> Tuple[str, str]:
     """Create feasibility plots and return the saved file paths (SVG)."""
@@ -192,32 +181,40 @@ def plot_feasibility(
             f"  <text x='{20}' y='{height/2:.1f}' text-anchor='middle' transform='rotate(-90, 20, {height/2:.1f})'>{y_label}</text>",
         ]
 
-    # (phi_star, m) feasibility map (log scale for m)
+    # (phi_star, param) feasibility map (log scale optional for param)
     phi_min = min(p.phi_star for p in points)
     phi_max = max(p.phi_star for p in points)
-    log_m_min = math.log10(min(p.m for p in points))
-    log_m_max = math.log10(max(p.m for p in points))
+    param_min = min(p.param for p in points)
+    param_max = max(p.param for p in points)
+
+    if param_scale == "log":
+        log_param_min = math.log10(param_min)
+        log_param_max = math.log10(param_max)
 
     def _map_phi(phi_val: float) -> float:
         return pad + (phi_val - phi_min) / (phi_max - phi_min) * (width - 2 * pad)
 
-    def _map_m(m_val: float) -> float:
-        frac = (math.log10(m_val) - log_m_min) / (log_m_max - log_m_min)
+    def _map_param(param_val: float) -> float:
+        if param_scale == "log":
+            frac = (math.log10(param_val) - log_param_min) / (log_param_max - log_param_min)
+        else:
+            frac = (param_val - param_min) / (param_max - param_min)
         return height - pad - frac * (height - 2 * pad)
 
     valid_x = [_map_phi(p.phi_star) for p in valid]
-    valid_y = [_map_m(p.m) for p in valid]
+    valid_y = [_map_param(p.param) for p in valid]
     invalid_x = [_map_phi(p.phi_star) for p in invalid]
-    invalid_y = [_map_m(p.m) for p in invalid]
+    invalid_y = [_map_param(p.param) for p in invalid]
 
-    phi_m_lines: List[str] = _header("Feasibility in (phi*, m)")
+    phi_m_lines: List[str] = _header("Feasibility in (phi*, param)")
     phi_m_lines.append(f"  <rect x='{pad}' y='{pad}' width='{width-2*pad}' height='{height-2*pad}' fill='none' stroke='black' stroke-width='1' />")
     phi_m_lines.extend(_scatter_elements(invalid_x, invalid_y, "#d62728", "invalid"))
     phi_m_lines.extend(_scatter_elements(valid_x, valid_y, "#1f77b4", "valid"))
-    phi_m_lines.extend(_axis_labels("phi*", "m (log10)") )
+    y_label = f"{points[0].param_name} (log10)" if param_scale == "log" else points[0].param_name
+    phi_m_lines.extend(_axis_labels("phi*", y_label) )
     phi_m_lines.extend(_footer())
 
-    phi_m_path = os.path.join(results_dir, "phase3_feasibility_phi_m.svg")
+    phi_m_path = os.path.join(results_dir, "phase3_feasibility_phi_param.svg")
     with open(phi_m_path, "w", encoding="utf-8") as f:
         f.write("\n".join(phi_m_lines))
 
@@ -227,10 +224,10 @@ def plot_feasibility(
     As_min_data = min(p.As for p in points)
     As_max_data = max(p.As for p in points)
 
-    ns_min = min(ns_min_data, ns0 - dns_abs)
-    ns_max = max(ns_max_data, ns0 + dns_abs)
-    As_min = min(As_min_data, As0 * (1.0 - dAs_frac))
-    As_max = max(As_max_data, As0 * (1.0 + dAs_frac))
+    ns_min = min(ns_min_data, target.ns0 - target.dns_abs)
+    ns_max = max(ns_max_data, target.ns0 + target.dns_abs)
+    As_min = min(As_min_data, target.As0 * (1.0 - target.dAs_frac))
+    As_max = max(As_max_data, target.As0 * (1.0 + target.dAs_frac))
 
     def _map_ns(ns_val: float) -> float:
         return pad + (ns_val - ns_min) / (ns_max - ns_min) * (width - 2 * pad)
@@ -247,10 +244,10 @@ def plot_feasibility(
     As_ns_lines.append(f"  <rect x='{pad}' y='{pad}' width='{width-2*pad}' height='{height-2*pad}' fill='none' stroke='black' stroke-width='1' />")
 
     # Target window rectangle
-    ns_target_min = ns0 - dns_abs
-    ns_target_max = ns0 + dns_abs
-    As_target_min = As0 * (1.0 - dAs_frac)
-    As_target_max = As0 * (1.0 + dAs_frac)
+    ns_target_min = target.ns0 - target.dns_abs
+    ns_target_max = target.ns0 + target.dns_abs
+    As_target_min = target.As0 * (1.0 - target.dAs_frac)
+    As_target_max = target.As0 * (1.0 + target.dAs_frac)
     rect_x = _map_ns(ns_target_min)
     rect_y = _map_As(As_target_max)
     rect_w = _map_ns(ns_target_max) - rect_x
@@ -273,40 +270,32 @@ def plot_feasibility(
 
 def run_phase3_scan(
     *,
-    phi_range: Tuple[float, float] = PHI_RANGE_DEFAULT,
-    m_range: Tuple[float, float] = M_RANGE_DEFAULT,
-    N_range: Tuple[float, float] = N_RANGE_DEFAULT,
+    model: ModelConfig = DEFAULT_MODEL,
+    phi_range: Tuple[float, float] | None = None,
+    param_range: Tuple[float, float] | None = None,
+    N_range: Tuple[float, float] = N_RANGE_BASELINE,
     n_phi: int = 40,
-    n_m: int = 40,
+    n_param: int = 40,
     mpl: float = 1.0,
-    As0: float = mvp_model.AS0,
-    ns0: float = mvp_model.NS0,
-    dAs_frac: float = mvp_model.DAS_FRAC,
-    dns_abs: float = mvp_model.DNS_ABS,
-    r_max: float | None = None,
+    target: ICTargetSpec = ICTargetSpec.mode_a(),
     results_dir: str = "results",
 ) -> Tuple[List[ScanPoint], Tuple[str, str]]:
     """Convenience wrapper that performs the scan and plots the results."""
 
     points = coarse_grid(
+        model=model,
         phi_range=phi_range,
-        m_range=m_range,
+        param_range=param_range,
         N_range=N_range,
         n_phi=n_phi,
-        n_m=n_m,
+        n_param=n_param,
         mpl=mpl,
-        As0=As0,
-        ns0=ns0,
-        dAs_frac=dAs_frac,
-        dns_abs=dns_abs,
-        r_max=r_max,
+        target=target,
     )
     paths = plot_feasibility(
         points,
-        As0=As0,
-        ns0=ns0,
-        dAs_frac=dAs_frac,
-        dns_abs=dns_abs,
+        target=target,
+        param_scale=model.param_scale,
         results_dir=results_dir,
     )
     return points, paths
