@@ -25,12 +25,33 @@ The MVP default model is single-field slow-roll with:
   - `MODEL_SPEC.md`: the model family and formulas used for the forward map
   - `PRIORS.md`: the small menu of priors (“measures”) used in the selection test
   - `RESULTS_TEMPLATE.md`: a fill-in template for reporting results
+  - `RESULTS.md`: completed report with scan/prior outputs and sensitivities
 - `src/`
-  - `mvp_model.py`: forward-map implementation (slow-roll)
-  - `priors.py`: priors over parameter space
-  - `scan.py`: grid/MC scan and typicality computation
+  - `mvp_model.py`: forward-map implementation (slow-roll) plus validity predicates for Phase 2
+  - `scan.py`: coarse grid scan + feasibility plots for Phase 3
+  - `priors.py`: priors over parameter space and P(valid) estimators for Phase 4
 - `results/`: generated plots/tables
 - `notebooks/`: optional exploratory notebooks
+
+Run the Phase 3 feasibility scan:
+
+```
+python -m src.scan
+```
+
+The SVG plots are saved under `results/`.
+
+Estimate P(valid) under the Phase 4 prior menu (defaults: tensor bound off, N in [50, 60]):
+
+```
+python -m src.priors
+```
+
+Run tensor/N/tolerance sensitivity sweeps with:
+
+```
+python -m src.priors --sensitivity
+```
 
 ## MVP “done” criteria
 - A feasible region of `(phi_star, m)` that matches `(As, ns)` within tolerances and yields `N` in range.
